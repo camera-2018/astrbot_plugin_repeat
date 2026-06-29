@@ -1,0 +1,123 @@
+{
+  "qdrant_url": {
+    "description": "Qdrant 服务地址",
+    "type": "string",
+    "default": "http://localhost:6333",
+    "hint": "自托管 Qdrant 的 REST 地址,docker-compose 默认 http://localhost:6333"
+  },
+  "qdrant_api_key": {
+    "description": "Qdrant API Key(可选)",
+    "type": "string",
+    "default": "",
+    "hint": "若 Qdrant 开了鉴权则填,否则留空"
+  },
+  "collection_name": {
+    "description": "Qdrant 集合名",
+    "type": "string",
+    "default": "repeat_memory",
+    "hint": "所有群共用一个集合,靠 group_id 过滤隔离"
+  },
+  "embedding_source": {
+    "description": "Embedding 来源",
+    "type": "string",
+    "default": "astrbot",
+    "options": ["astrbot", "openai"],
+    "hint": "astrbot=复用面板里配置的 embedding provider;openai=直连外部 OpenAI 兼容接口"
+  },
+  "embedding_provider_id": {
+    "description": "指定 AstrBot embedding provider 的 id(可选)",
+    "type": "string",
+    "default": "",
+    "hint": "embedding_source=astrbot 时生效,留空则用第一个可用的 embedding provider"
+  },
+  "openai_base_url": {
+    "description": "外部 embedding 接口 base_url",
+    "type": "string",
+    "default": "https://api.openai.com/v1",
+    "hint": "embedding_source=openai 时生效,需兼容 OpenAI /embeddings"
+  },
+  "openai_api_key": {
+    "description": "外部 embedding 接口 API Key",
+    "type": "string",
+    "default": "",
+    "hint": "embedding_source=openai 时生效"
+  },
+  "openai_model": {
+    "description": "外部 embedding 模型名",
+    "type": "string",
+    "default": "text-embedding-3-small",
+    "hint": "embedding_source=openai 时生效"
+  },
+  "openai_dim": {
+    "description": "外部 embedding 维度(0=自动探测)",
+    "type": "int",
+    "default": 0,
+    "hint": "embedding_source=openai 时生效,0 表示首次调用时按返回向量长度自动确定"
+  },
+  "active_group_whitelist": {
+    "description": "生效群白名单(留空=所有群生效)",
+    "type": "list",
+    "default": [],
+    "hint": "只在这些群里收集/发话,填群号字符串"
+  },
+  "collect_user_whitelist": {
+    "description": "收集用户白名单(留空=收集所有人)",
+    "type": "list",
+    "default": [],
+    "hint": "只把这些用户的发言存入向量库,填用户 QQ 号字符串"
+  },
+  "enable_echo": {
+    "description": "启用附和模式",
+    "type": "bool",
+    "default": true,
+    "hint": "语义相近就把历史里相近的那句翻出来"
+  },
+  "enable_continuation": {
+    "description": "启用顺延模式",
+    "type": "bool",
+    "default": true,
+    "hint": "命中话题触发词就接一句历史里的自然接续句"
+  },
+  "continuation_use_llm": {
+    "description": "顺延模式用 LLM 拆句",
+    "type": "bool",
+    "default": true,
+    "hint": "true=调 LLM 把发言拆成 触发词→接续句;false=整句存储与检索"
+  },
+  "echo_threshold": {
+    "description": "附和相似度阈值",
+    "type": "float",
+    "default": 0.85,
+    "hint": "余弦相似度,越高越严格(0~1)"
+  },
+  "cont_threshold": {
+    "description": "顺延相似度阈值",
+    "type": "float",
+    "default": 0.80,
+    "hint": "余弦相似度,越高越严格(0~1)"
+  },
+  "reply_probability": {
+    "description": "命中后发话概率",
+    "type": "float",
+    "default": 0.6,
+    "hint": "0~1,设 1 则高分必发"
+  },
+  "cooldown_seconds": {
+    "description": "每群发话冷却秒数",
+    "type": "int",
+    "default": 30,
+    "hint": "同一个群两次主动发话的最小间隔"
+  },
+  "min_length": {
+    "description": "收集/匹配的最小文本长度",
+    "type": "int",
+    "default": 4,
+    "hint": "太短的消息忽略"
+  },
+  "dedup_threshold": {
+    "description": "写入去重阈值",
+    "type": "float",
+    "default": 0.97,
+    "hint": "新句与库内最相近句相似度超过此值则不重复写入,防止库膨胀;设 1 关闭去重"
+  }
+}

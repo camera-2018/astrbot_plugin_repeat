@@ -1,0 +1,13 @@
+services:
+  qdrant:
+    image: qdrant/qdrant
+    container_name: repeat_qdrant
+    ports:
+      - "6333:6333"   # REST / dashboard
+      - "6334:6334"   # gRPC
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    # 如需鉴权,取消注释并在插件配置里填同样的 qdrant_api_key
+    # environment:
+    #   QDRANT__SERVICE__API_KEY: "change-me"
