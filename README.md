@@ -46,6 +46,8 @@ pip install -r requirements.txt
 | `collect_user_whitelist` | 收集用户白名单,**留空=收集所有人** | `[]` |
 | `enable_echo` / `enable_continuation` | 两种模式开关 | 都开 |
 | `continuation_use_llm` | 顺延用 LLM 拆句(关掉则整句存储) | 开 |
+| `continuation_min_length` | 顺延抽取最小长度(短消息不调 LLM) | 8 |
+| `continuation_cue_words` | 含任一词才调 LLM 抽取顺延(省成本,留空=不按词过滤) | 一组默认词 |
 | `echo_threshold` / `cont_threshold` | 相似度阈值(余弦,0~1) | 0.85 / 0.80 |
 | `reply_probability` | 命中后发话概率(1=高分必发) | 0.6 |
 | `cooldown_seconds` | 每群发话冷却 | 30 |
@@ -67,6 +69,9 @@ pip install -r requirements.txt
 
 ## 注意
 
-- 向量维度必须与 embedding 模型一致。集合一旦按某维度建好,**更换 embedding 模型需新建 `collection_name` 或删除旧集合重建**。
-- LLM 拆句失败/超时会自动回退为整句存储,不阻塞消息处理。
+- 向量维度必须与 embedding 模型一致。集合一旦按某维度建好,**更换 embedding 模型需新建 `collection_name` 或删除旧集合重建**;维度不一致时插件会判定为"未就绪"(`/repeat status` 可见),不会静默写错。
+- LLM 拆句失败/超时会**跳过本条顺延写入**(不污染顺延库),不阻塞消息处理;只有显式把 `continuation_use_llm` 关掉时才整句存储。
+- 顺延抽取默认只对**达到 `continuation_min_length` 且命中 `continuation_cue_words`** 的消息调 LLM,以控制成本;按需调整或留空 `continuation_cue_words` 放宽。
 - 冷却状态放内存,插件重载后重置。
+- **唤醒前缀**:`/repeat` 等命令默认按 `/` 前缀;若你在 AstrBot 改了唤醒前缀,请相应使用,普通消息过滤也按 `/` 判断。
+- **隐私**:本插件会把群成员发言逐条存入向量库。请仅对知情、同意的群和用户开启(用白名单约束),`/repeat clear` 可随时清空本群记忆。

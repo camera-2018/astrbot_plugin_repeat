@@ -84,6 +84,18 @@
     "default": true,
     "hint": "true=调 LLM 把发言拆成 触发词→接续句;false=整句存储与检索"
   },
+  "continuation_min_length": {
+    "description": "顺延抽取的最小文本长度",
+    "type": "int",
+    "default": 8,
+    "hint": "只对达到此长度的消息考虑调 LLM 抽取顺延(省成本),仅 continuation_use_llm=true 时生效"
+  },
+  "continuation_cue_words": {
+    "description": "顺延抽取触发词(前置闸)",
+    "type": "list",
+    "default": ["但是", "不过", "其实", "我去过", "我试过", "我觉得", "我懂", "我也", "建议", "推荐", "记得", "千万", "一定要", "别"],
+    "hint": "消息含任一词才调 LLM 抽取顺延,省掉大量无谓调用;留空=不按词过滤(所有达长度的消息都调 LLM)。仅 continuation_use_llm=true 时生效"
+  },
   "echo_threshold": {
     "description": "附和相似度阈值",
     "type": "float",

@@ -38,8 +38,10 @@ class QdrantStore:
             info = await self.client.get_collection(self.collection)
             existing_dim = info.config.params.vectors.size
             if existing_dim != dim:
-                logger.error(
-                    f"[repeat] 集合 {self.collection} 维度={existing_dim} 与当前 embedding 维度={dim} "
+                # 维度不一致时直接报错,让上层把插件标记为未就绪,
+                # 而不是后续 upsert/search 持续抛异常被吞掉、表现为"静默不工作"。
+                raise RuntimeError(
+                    f"集合 {self.collection} 维度={existing_dim} 与当前 embedding 维度={dim} "
                     f"不一致!请更换 collection_name 或删除旧集合后重建。"
                 )
         # 给过滤字段建索引(幂等,重复建会被忽略/报已存在,吞掉异常)

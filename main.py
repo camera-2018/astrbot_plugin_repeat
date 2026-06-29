@@ -10,7 +10,6 @@
 import asyncio
 import json
 import random
-import re
 import time
 from typing import Dict, Optional, Set
 
@@ -62,6 +61,10 @@ class RepeatPlugin(Star):
         self.enable_echo = bool(config.get("enable_echo", True))
         self.enable_continuation = bool(config.get("enable_continuation", True))
         self.continuation_use_llm = bool(config.get("continuation_use_llm", True))
+        self.continuation_min_length = int(config.get("continuation_min_length", 8))
+        self.continuation_cue_words = [
+            str(w) for w in (config.get("continuation_cue_words") or [])
+        ]
 
         # 阈值 / 时机
         self.echo_threshold = float(config.get("echo_threshold", 0.85))
@@ -110,10 +113,17 @@ class RepeatPlugin(Star):
 
     @staticmethod
     def _clean_text(raw: str) -> str:
-        text = (raw or "").strip()
-        # 去掉 @ 提及与多余空白
-        text = re.sub(r"@\S+", "", text).strip()
-        return text
+        # event.message_str 已是纯文本(At 等组件不在其中),只需规整空白。
+        # 不要用 @\S+ 这种正则:中文 @ 后常无空格,会把正文一起删掉。
+        return (raw or "").strip()
+
+    def _maybe_continuation(self, text: str) -> bool:
+        """便宜的前置闸:决定是否值得为这条消息调用 LLM 做顺延抽取。"""
+        if len(text) < self.continuation_min_length:
+            return False
+        if self.continuation_cue_words:
+            return any(w in text for w in self.continuation_cue_words)
+        return True
 
     def _can_reply(self, group_id: str) -> bool:
         last = self._last_reply.get(group_id, 0)
@@ -237,17 +247,26 @@ class RepeatPlugin(Star):
             logger.warning(f"[repeat] 写入 echo 失败: {e}")
 
     async def _collect_continuation(self, event, group_id, vec, text, sender_id):
-        trigger, response = text, text
         if self.continuation_use_llm:
-            extracted = await self._llm_extract(event, text)
-            if extracted == "SKIP":
+            # 前置闸:不值得抽取的消息直接跳过,省掉 LLM 调用
+            if not self._maybe_continuation(text):
                 return
-            if isinstance(extracted, tuple):
-                trigger, response = extracted
-            # extracted is None -> LLM 不可用,回退整句(trigger=response=text)
+            extracted = await self._llm_extract(event, text)
+            # "SKIP"=无接话结构;None=LLM 出错/不可用。两者都跳过,避免污染 cont 库。
+            if not isinstance(extracted, tuple):
+                return
+            trigger, response = extracted
+        else:
+            # 显式关闭 LLM:整句存储 + 检索
+            trigger, response = text, text
 
         try:
             tvec = vec if trigger == text else await self.embedder.embed(trigger)
+            # 去重:与库内最相近的 trigger 过于相似则跳过,防止 cont 库无界增长
+            if self.dedup_threshold < 1.0:
+                dup = await self.store.best_match(MODE_CONT, group_id, tvec)
+                if dup and dup[0] >= self.dedup_threshold:
+                    return
             await self.store.upsert(
                 MODE_CONT,
                 group_id,
