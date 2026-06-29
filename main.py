@@ -20,6 +20,16 @@ from astrbot.api.star import Context, Star, register
 from .embedding import build_embedder
 from .qdrant_store import MODE_CONT, MODE_ECHO, QdrantStore
 
+PLUGIN_NAME = "astrbot_plugin_repeat"
+
+# Plugin Pages(WebUI 管理台)能力在较新的 AstrBot 才有,缺失时插件仍可正常运行。
+try:
+    from astrbot.api.web import error_response, json_response, request
+
+    _WEB_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _WEB_AVAILABLE = False
+
 _CONT_EXTRACT_PROMPT = """你在帮一个群聊机器人建立"接话"记忆库。下面是群里的一条消息。
 请判断它是否包含"提到某个话题后,自然接上的一句个人化短评/接话"。
 
@@ -79,6 +89,117 @@ class RepeatPlugin(Star):
         self._ready = False
         self._init_lock = asyncio.Lock()
         self._last_reply: Dict[str, float] = {}
+
+        self._register_web_apis()
+
+    # ---------- WebUI 管理台(Plugin Pages) ----------
+
+    def _register_web_apis(self):
+        if not _WEB_AVAILABLE:
+            return
+        reg = getattr(self.context, "register_web_api", None)
+        if not callable(reg):
+            return
+        p = PLUGIN_NAME
+        try:
+            reg(f"/{p}/stats", self.web_stats, ["GET"], "向量库统计")
+            reg(f"/{p}/groups", self.web_groups, ["GET"], "群组列表")
+            reg(f"/{p}/list", self.web_list, ["GET"], "浏览记忆点")
+            reg(f"/{p}/search", self.web_search, ["POST"], "语义搜索")
+            reg(f"/{p}/upsert", self.web_upsert, ["POST"], "新增/编辑记忆点")
+            reg(f"/{p}/delete", self.web_delete, ["POST"], "删除记忆点/清空群")
+            logger.info("[repeat] 已注册 WebUI 管理台接口")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[repeat] 注册 WebUI 接口失败: {e}")
+
+    async def web_stats(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪:请检查 Qdrant 连接与 embedding 配置")
+        return json_response(
+            {
+                "status": "ok",
+                "data": {
+                    "total": await self.store.total(),
+                    "by_mode": await self.store.facet("mode"),
+                    "by_group": await self.store.facet("group_id"),
+                },
+            }
+        )
+
+    async def web_groups(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪")
+        groups = await self.store.facet("group_id")
+        return json_response({"status": "ok", "data": [g["value"] for g in groups]})
+
+    async def web_list(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪")
+        group = request.query.get("group", "")
+        if not group:
+            return error_response("缺少 group 参数")
+        mode = request.query.get("mode", "") or None
+        limit = request.query.get("limit", 20, type=int)
+        offset = request.query.get("offset", "") or None
+        points, nxt = await self.store.scroll(group, mode, limit, offset)
+        items = [{"id": str(p.id), **(p.payload or {})} for p in points]
+        return json_response({"status": "ok", "data": {"items": items, "next": nxt}})
+
+    async def web_search(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪")
+        body = await request.json(default={})
+        group = str(body.get("group", "")).strip()
+        mode = str(body.get("mode", "echo")).strip() or "echo"
+        query = str(body.get("query", "")).strip()
+        limit = int(body.get("limit", 10) or 10)
+        if not group or not query:
+            return error_response("group 和 query 必填")
+        try:
+            vec = await self.embedder.embed(query)
+        except Exception as e:  # noqa: BLE001
+            return error_response(f"embedding 失败: {e}", 500)
+        hits = await self.store.search(mode, group, vec, limit=limit)
+        data = [{"id": str(h.id), "score": h.score, **(h.payload or {})} for h in hits]
+        return json_response({"status": "ok", "data": data})
+
+    async def web_upsert(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪")
+        body = await request.json(default={})
+        group = str(body.get("group", "")).strip()
+        mode = str(body.get("mode", "")).strip()
+        text = str(body.get("text", "")).strip()
+        response = str(body.get("response", "")).strip()
+        pid = body.get("id") or None
+        if not group or not text or mode not in (MODE_ECHO, MODE_CONT):
+            return error_response("group/text 必填,mode 须为 echo 或 cont")
+        if mode == MODE_CONT and not response:
+            return error_response("顺延(cont)模式需要填写 response(接续句)")
+        try:
+            # echo 用全文,cont 用 text(即触发词)做向量
+            vec = await self.embedder.embed(text)
+        except Exception as e:  # noqa: BLE001
+            return error_response(f"embedding 失败: {e}", 500)
+        new_id = await self.store.upsert(
+            mode, group, vec, text=text, response=response,
+            sender_id="webui", point_id=pid,
+        )
+        return json_response({"status": "ok", "data": {"id": new_id}})
+
+    async def web_delete(self):
+        if not await self._ensure_ready():
+            return error_response("插件未就绪")
+        body = await request.json(default={})
+        pid = body.get("id")
+        group = str(body.get("group", "")).strip()
+        if pid:
+            await self.store.delete_point(pid)
+            return json_response({"status": "ok", "data": {"deleted": str(pid)}})
+        if group and body.get("clear"):
+            await self.store.clear_group(group)
+            return json_response({"status": "ok", "data": {"cleared_group": group}})
+        return error_response("需要 id(删除单点)或 group + clear=true(清空整群)")
 
     # ---------- 生命周期 ----------
 

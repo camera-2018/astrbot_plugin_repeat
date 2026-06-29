@@ -73,9 +73,11 @@ class QdrantStore:
         text: str,
         response: str = "",
         sender_id: str = "",
-    ) -> None:
+        point_id: Optional[str] = None,
+    ) -> str:
+        pid = point_id or str(uuid.uuid4())
         point = models.PointStruct(
-            id=str(uuid.uuid4()),
+            id=pid,
             vector=vector,
             payload={
                 "group_id": group_id,
@@ -87,6 +89,7 @@ class QdrantStore:
             },
         )
         await self.client.upsert(collection_name=self.collection, points=[point])
+        return pid
 
     async def search(
         self, mode: str, group_id: str, vector: List[float], limit: int = 1
@@ -108,6 +111,57 @@ class QdrantStore:
             return None
         hit = hits[0]
         return hit.score, (hit.payload or {})
+
+    async def scroll(
+        self,
+        group_id: str,
+        mode: Optional[str] = None,
+        limit: int = 20,
+        offset: Optional[str] = None,
+    ) -> Tuple[List[models.Record], Optional[str]]:
+        must = [
+            models.FieldCondition(
+                key="group_id", match=models.MatchValue(value=group_id)
+            )
+        ]
+        if mode:
+            must.append(
+                models.FieldCondition(key="mode", match=models.MatchValue(value=mode))
+            )
+        points, next_offset = await self.client.scroll(
+            collection_name=self.collection,
+            scroll_filter=models.Filter(must=must),
+            limit=limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        return points, (str(next_offset) if next_offset is not None else None)
+
+    async def delete_point(self, point_id: str) -> None:
+        await self.client.delete(
+            collection_name=self.collection,
+            points_selector=models.PointIdsList(points=[point_id]),
+        )
+
+    async def facet(self, key: str, group_id: Optional[str] = None, limit: int = 200):
+        flt = None
+        if group_id:
+            flt = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="group_id", match=models.MatchValue(value=group_id)
+                    )
+                ]
+            )
+        res = await self.client.facet(
+            collection_name=self.collection, key=key, facet_filter=flt, limit=limit
+        )
+        return [{"value": h.value, "count": h.count} for h in res.hits]
+
+    async def total(self) -> int:
+        res = await self.client.count(collection_name=self.collection, exact=True)
+        return res.count
 
     async def clear_group(self, group_id: str) -> None:
         await self.client.delete(

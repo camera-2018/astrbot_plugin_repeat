@@ -61,6 +61,22 @@ pip install -r requirements.txt
 - `/repeat status` — 查看本群记忆条数与当前配置。
 - `/repeat clear` — 清空本群记忆(**仅管理员**)。
 
+## 4.5 内嵌 WebUI 管理台
+
+插件自带一个原生内嵌在 AstrBot 后台的管理页(基于 AstrBot **Plugin Pages**),
+在 AstrBot WebUI 的插件页里打开 `astrbot_plugin_repeat` 的页面即可,功能:
+
+- **统计**:总记忆点数、按模式(附和/顺延)分布、群数量。
+- **语义搜索**:选群 + 模式 + 关键词,实时 embedding 后向量检索,显示相似度分数。
+- **浏览**:按群 / 模式分页翻看所有记忆点。
+- **新增 / 编辑**:手动添加或按 id 覆盖记忆点(echo 填要翻出来的话;cont 填触发词 + 接续句),保存时自动重算向量。
+- **删除 / 清空**:删除单条,或一键清空整群。
+
+后端通过 `context.register_web_api` 暴露以下接口(前端用 `window.AstrBotPluginPage` 桥接调用,均带后台鉴权):
+`stats` / `groups` / `list` / `search` / `upsert` / `delete`。
+
+> 该页需要支持 Plugin Pages 的 AstrBot 版本;若版本过旧,插件会自动跳过页面注册、其余功能照常工作。
+
 ## 5. 工作机制
 
 - 单集合 + payload(`group_id`/`mode`)过滤实现**群隔离**:每次检索都限定当前群。
