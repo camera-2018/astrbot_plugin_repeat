@@ -21,6 +21,10 @@ from .embedding import build_embedder
 from .qdrant_store import MODE_CONT, MODE_ECHO, QdrantStore
 
 PLUGIN_NAME = "astrbot_plugin_repeat"
+INIT_RETRY_SECONDS = 60
+INIT_ERROR_LOG_SECONDS = 300
+EMBEDDING_ERROR_LOG_SECONDS = 60
+LLM_ERROR_LOG_SECONDS = 300
 
 # Plugin Pages(WebUI 管理台)能力在较新的 AstrBot 才有,缺失时插件仍可正常运行。
 try:
@@ -89,6 +93,11 @@ class RepeatPlugin(Star):
         self._ready = False
         self._init_lock = asyncio.Lock()
         self._last_reply: Dict[str, float] = {}
+        self._next_init_retry = 0.0
+        self._next_init_error_log = 0.0
+        self._last_init_error = ""
+        self._next_embedding_error_log = 0.0
+        self._next_llm_error_log = 0.0
 
         self._register_web_apis()
 
@@ -204,14 +213,22 @@ class RepeatPlugin(Star):
     # ---------- 生命周期 ----------
 
     async def initialize(self):
-        await self._ensure_ready()
+        # AstrBot may call plugin initialize() before embedding providers are loaded.
+        # Defer actual setup until the first message/WebUI request needs it.
+        logger.info("[repeat] 已启用,将在首次使用时初始化 embedding 与 Qdrant")
 
     async def _ensure_ready(self) -> bool:
         if self._ready:
             return True
+        now = time.time()
+        if now < self._next_init_retry:
+            return False
         async with self._init_lock:
             if self._ready:
                 return True
+            now = time.time()
+            if now < self._next_init_retry:
+                return False
             try:
                 self.embedder = build_embedder(self.config, self.context)
                 dim = await self.embedder.dim()
@@ -220,9 +237,22 @@ class RepeatPlugin(Star):
                 )
                 await self.store.ensure_collection(dim)
                 self._ready = True
+                self._last_init_error = ""
+                self._next_init_retry = 0.0
+                self._next_init_error_log = 0.0
                 logger.info(f"[repeat] 初始化完成 (collection={self.collection}, dim={dim})")
             except Exception as e:  # noqa: BLE001
-                logger.error(f"[repeat] 初始化失败,稍后会重试: {e}")
+                msg = self._format_exception(e)
+                now = time.time()
+                if msg != self._last_init_error or now >= self._next_init_error_log:
+                    logger.error(
+                        "[repeat] 初始化失败,"
+                        f"{INIT_RETRY_SECONDS}s 后重试"
+                        f"({INIT_ERROR_LOG_SECONDS}s 内同类错误静默): {msg}"
+                    )
+                    self._next_init_error_log = now + INIT_ERROR_LOG_SECONDS
+                self._last_init_error = msg
+                self._next_init_retry = now + INIT_RETRY_SECONDS
                 self._ready = False
         return self._ready
 
@@ -250,8 +280,14 @@ class RepeatPlugin(Star):
         last = self._last_reply.get(group_id, 0)
         return (time.time() - last) >= self.cooldown_seconds
 
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        detail = str(exc).strip()
+        name = type(exc).__name__
+        return f"{name}: {detail}" if detail else name
+
     async def _llm_extract(self, event: AstrMessageEvent, text: str):
-        """返回 (trigger, response) 元组;"SKIP" 表示无接话结构;None 表示 LLM 不可用(调用方回退整句)。"""
+        """返回 (trigger, response) 元组;"SKIP" 表示无接话结构;None 表示 LLM 不可用。"""
         try:
             prov = self.context.get_using_provider(umo=event.unified_msg_origin)
         except TypeError:
@@ -264,7 +300,14 @@ class RepeatPlugin(Star):
             resp = await prov.text_chat(prompt=_CONT_EXTRACT_PROMPT % text)
             content = getattr(resp, "completion_text", None) or str(resp)
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[repeat] LLM 拆句失败,回退整句: {e}")
+            now = time.time()
+            if now >= self._next_llm_error_log:
+                logger.warning(
+                    "[repeat] LLM 拆句失败,本条跳过 cont 收集"
+                    f"({LLM_ERROR_LOG_SECONDS}s 内同类错误静默): "
+                    f"{self._format_exception(e)}"
+                )
+                self._next_llm_error_log = now + LLM_ERROR_LOG_SECONDS
             return None
 
         data = self._parse_json(content)
@@ -294,8 +337,12 @@ class RepeatPlugin(Star):
 
     # ---------- 主流程 ----------
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.event_message_type(
+        filter.EventMessageType.GROUP_MESSAGE,
+        desc="监听群消息,按白名单收集文本并在命中历史语义时自然复读或接话",
+    )
     async def on_group_message(self, event: AstrMessageEvent):
+        """监听群消息并执行语义复读/顺延接话主流程。"""
         group_id = str(event.get_group_id() or "")
         if not group_id:
             return
@@ -314,7 +361,14 @@ class RepeatPlugin(Star):
         try:
             vec = await self.embedder.embed(text)
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[repeat] embedding 失败: {e}")
+            now = time.time()
+            if now >= self._next_embedding_error_log:
+                logger.warning(
+                    "[repeat] embedding 失败"
+                    f"({EMBEDDING_ERROR_LOG_SECONDS}s 内同类错误静默): "
+                    f"{self._format_exception(e)}"
+                )
+                self._next_embedding_error_log = now + EMBEDDING_ERROR_LOG_SECONDS
             return
 
         # 1) 先检索(写入前,避免命中刚插入的自己)
@@ -401,12 +455,14 @@ class RepeatPlugin(Star):
 
     # ---------- 管理命令 ----------
 
-    @filter.command_group("repeat")
+    @filter.command_group("repeat", desc="群组语义复读管理指令组")
     def repeat(self):
+        """管理群组语义复读插件。"""
         pass
 
-    @repeat.command("status")
+    @repeat.command("status", desc="查看本群记忆数量、模式开关、阈值和冷却配置")
     async def repeat_status(self, event: AstrMessageEvent):
+        """查看本群语义复读状态。"""
         group_id = str(event.get_group_id() or "")
         if not await self._ensure_ready():
             yield event.plain_result("[repeat] 未就绪:请检查 Qdrant 连接与 embedding 配置。")
@@ -423,8 +479,9 @@ class RepeatPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @repeat.command("clear")
+    @repeat.command("clear", desc="清空当前群的语义复读记忆")
     async def repeat_clear(self, event: AstrMessageEvent):
+        """清空当前群的语义复读记忆。"""
         group_id = str(event.get_group_id() or "")
         if not group_id:
             yield event.plain_result("[repeat] 仅可在群内清空本群记忆。")

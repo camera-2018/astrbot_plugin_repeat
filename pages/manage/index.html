@@ -1,83 +1,24 @@
 <!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>群组语义复读 · 向量库管理台</title>
-    <link rel="stylesheet" href="./style.css" />
-  </head>
-  <body>
-    <div class="wrap">
-      <header>
-        <h1>群组语义复读 · 向量库管理台</h1>
-        <div id="stats" class="stats">加载中…</div>
-      </header>
-
-      <section class="bar">
-        <label>群号
-          <input id="group" list="groupList" placeholder="输入或选择群号" autocomplete="off" />
-          <datalist id="groupList"></datalist>
-        </label>
-        <button id="refresh" class="ghost">刷新统计/群列表</button>
-        <span id="msg" class="msg"></span>
-      </section>
-
-      <main class="grid">
-        <!-- 搜索 -->
-        <section class="card">
-          <h2>语义搜索</h2>
-          <div class="row">
-            <select id="searchMode">
-              <option value="echo">附和 echo</option>
-              <option value="cont">顺延 cont</option>
-            </select>
-            <input id="searchQuery" placeholder="输入要检索的话…" />
-            <input id="searchLimit" type="number" value="10" min="1" max="50" title="返回条数" />
-            <button id="searchBtn">搜索</button>
-          </div>
-          <div id="searchResult" class="result"></div>
-        </section>
-
-        <!-- 浏览 -->
-        <section class="card">
-          <h2>浏览记忆点</h2>
-          <div class="row">
-            <select id="listMode">
-              <option value="">全部模式</option>
-              <option value="echo">附和 echo</option>
-              <option value="cont">顺延 cont</option>
-            </select>
-            <input id="listLimit" type="number" value="20" min="1" max="100" title="每页条数" />
-            <button id="listBtn">加载</button>
-            <button id="listMore" class="ghost" disabled>加载更多</button>
-          </div>
-          <div id="listResult" class="result"></div>
-        </section>
-
-        <!-- 新增 / 编辑 -->
-        <section class="card">
-          <h2 id="formTitle">新增记忆点</h2>
-          <input type="hidden" id="editId" />
-          <div class="row">
-            <select id="formMode">
-              <option value="echo">附和 echo</option>
-              <option value="cont">顺延 cont</option>
-            </select>
-          </div>
-          <label class="block">文本 / 触发词
-            <textarea id="formText" rows="2" placeholder="echo:要被翻出来的话;cont:话题触发词"></textarea>
-          </label>
-          <label class="block" id="responseWrap">接续句 (response,仅 cont)
-            <textarea id="formResponse" rows="2" placeholder="命中触发词后接的那句话"></textarea>
-          </label>
-          <div class="row">
-            <button id="saveBtn">保存</button>
-            <button id="resetBtn" class="ghost">清空表单</button>
-          </div>
-          <p class="hint">提示:文本会用当前 embedding 模型重新计算向量。编辑会按 id 覆盖原向量。</p>
-        </section>
-      </main>
-    </div>
-    <script type="module" src="./app.js"></script>
-  </body>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Repeat 语义复读</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.3.1",
+        "react-dom/client": "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1",
+        "lucide-react": "https://esm.sh/lucide-react@0.468.0?deps=react@18.3.1"
+      }
+    }
+  </script>
+</head>
+<body class="min-h-screen bg-zinc-950 text-zinc-50 antialiased">
+  <div id="root">
+    <div class="grid min-h-screen place-items-center text-sm text-zinc-400">正在加载管理台...</div>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
 </html>

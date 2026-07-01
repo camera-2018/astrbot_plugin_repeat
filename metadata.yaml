@@ -1,9 +1,16 @@
 name: astrbot_plugin_repeat
 display_name: "群组语义复读 (Qdrant)"
+desc: "按群组+白名单隔离收集发言存入 Qdrant 向量库,语义附和/顺延接话,自带 WebUI 向量库管理台"
+description: "按群组+白名单隔离收集发言存入 Qdrant 向量库,支持语义附和、顺延接话与 WebUI 向量库管理。"
 short_desc: "按群组+白名单隔离收集发言存入 Qdrant 向量库,语义附和/顺延接话,自带 WebUI 向量库管理台"
 author: camera-2018
 version: "0.1.0"
 repo: "https://github.com/camera-2018/astrbot_plugin_repeat"
+tags:
+  - repeat
+  - qdrant
+  - embedding
+  - group
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.0.0"
