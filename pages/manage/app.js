@@ -58,6 +58,12 @@ function numberValue(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }
 
+function toEpoch(value) {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
+}
+
 async function waitBridgeReady() {
   if (typeof bridge.ready === "function") return bridge.ready();
   if (bridge.ready) return bridge.ready;
@@ -418,6 +424,10 @@ function App() {
   const [listLimit, setListLimit] = useState(20);
   const [listItems, setListItems] = useState([]);
   const [listNext, setListNext] = useState(null);
+  const [listKeyword, setListKeyword] = useState("");
+  const [listSender, setListSender] = useState("");
+  const [listSince, setListSince] = useState("");
+  const [listUntil, setListUntil] = useState("");
 
   const [form, setForm] = useState({ id: "", mode: "echo", text: "", response: "" });
 
@@ -501,6 +511,10 @@ function App() {
         const params = {
           group: currentGroup,
           mode: listMode,
+          keyword: listKeyword.trim(),
+          sender: listSender.trim(),
+          since: toEpoch(listSince),
+          until: toEpoch(listUntil),
           limit: numberValue(listLimit, 20, 1, 100),
         };
         if (!reset && listNext) params.offset = listNext;
@@ -508,14 +522,19 @@ function App() {
         const items = Array.isArray(data.items) ? data.items : [];
         setListItems((prev) => (reset ? items : [...prev, ...items]));
         setListNext(data.next || null);
-        flash(`已加载 ${items.length} 条${data.next ? ", 还有更多" : ""}`, "ok");
+        const scannedTxt =
+          typeof data.scanned === "number" ? `, 已扫描 ${data.scanned}` : "";
+        flash(
+          `命中 ${items.length} 条${scannedTxt}${data.next ? ", 还有更多" : ""}`,
+          "ok"
+        );
       } catch (e) {
-        flash("加载失败: " + e.message, "err");
+        flash("查询失败: " + e.message, "err");
       } finally {
         setBusy("");
       }
     },
-    [flash, group, listLimit, listMode, listNext]
+    [flash, group, listKeyword, listLimit, listMode, listNext, listSender, listSince, listUntil]
   );
 
   const doSearch = useCallback(async () => {
@@ -752,6 +771,37 @@ function App() {
               { className: "grid gap-4 p-4" },
               h(
                 "div",
+                { className: "grid gap-3 sm:grid-cols-2" },
+                h(Field, { label: "关键词(原文包含,不走向量)" }, h(Input, {
+                  "data-testid": "list-keyword",
+                  value: listKeyword,
+                  placeholder: "在 text / 接话 里精确包含…",
+                  onChange: (event) => setListKeyword(event.target.value),
+                  onKeyDown: (event) => {
+                    if (event.key === "Enter") loadList(true);
+                  },
+                })),
+                h(Field, { label: "来源 ID(可选)" }, h(Input, {
+                  "data-testid": "list-sender",
+                  value: listSender,
+                  placeholder: "只看某个发送者",
+                  onChange: (event) => setListSender(event.target.value),
+                })),
+                h(Field, { label: "起始时间(可选)" }, h(Input, {
+                  "data-testid": "list-since",
+                  type: "datetime-local",
+                  value: listSince,
+                  onChange: (event) => setListSince(event.target.value),
+                })),
+                h(Field, { label: "截止时间(可选)" }, h(Input, {
+                  "data-testid": "list-until",
+                  type: "datetime-local",
+                  value: listUntil,
+                  onChange: (event) => setListUntil(event.target.value),
+                }))
+              ),
+              h(
+                "div",
                 { className: "flex flex-col gap-3 sm:flex-row sm:items-end" },
                 h(Segmented, {
                   label: "列表模式",
@@ -775,7 +825,7 @@ function App() {
                   Button,
                   { type: "button", busy: busy === "list", onClick: () => loadList(true), disabled: !ready, "data-testid": "list-button" },
                   h(List, { size: 16, "aria-hidden": true }),
-                  "加载"
+                  "查询"
                 ),
                 listNext
                   ? h(
