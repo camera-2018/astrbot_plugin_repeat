@@ -45,12 +45,18 @@ class QdrantStore:
                     f"不一致!请更换 collection_name 或删除旧集合后重建。"
                 )
         # 给过滤字段建索引(幂等,重复建会被忽略/报已存在,吞掉异常)
-        for field in ("group_id", "mode"):
+        index_fields = {
+            "group_id": models.PayloadSchemaType.KEYWORD,
+            "mode": models.PayloadSchemaType.KEYWORD,
+            "sender_id": models.PayloadSchemaType.KEYWORD,
+            "ts": models.PayloadSchemaType.INTEGER,
+        }
+        for field, schema in index_fields.items():
             try:
                 await self.client.create_payload_index(
                     collection_name=self.collection,
                     field_name=field,
-                    field_schema=models.PayloadSchemaType.KEYWORD,
+                    field_schema=schema,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -137,6 +143,93 @@ class QdrantStore:
             with_vectors=False,
         )
         return points, (str(next_offset) if next_offset is not None else None)
+
+    async def query_raw(
+        self,
+        group_id: str,
+        mode: Optional[str] = None,
+        sender_id: Optional[str] = None,
+        keyword: Optional[str] = None,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        limit: int = 20,
+        offset: Optional[str] = None,
+        max_scan: int = 2000,
+        chunk: int = 256,
+    ) -> Tuple[List[dict], Optional[str], int]:
+        """按原始存储字段(不走向量)查询记忆点。
+
+        结构化条件(group/mode/sender/时间范围)走 Qdrant filter;
+        keyword 做大小写无关子串包含,匹配 text 或 response(客户端过滤)。
+        返回 (items, next_offset, scanned)。
+        """
+        must = [
+            models.FieldCondition(
+                key="group_id", match=models.MatchValue(value=group_id)
+            )
+        ]
+        if mode:
+            must.append(
+                models.FieldCondition(key="mode", match=models.MatchValue(value=mode))
+            )
+        if sender_id:
+            must.append(
+                models.FieldCondition(
+                    key="sender_id", match=models.MatchValue(value=sender_id)
+                )
+            )
+        if since is not None or until is not None:
+            must.append(
+                models.FieldCondition(
+                    key="ts", range=models.Range(gte=since, lte=until)
+                )
+            )
+        flt = models.Filter(must=must)
+        kw = (keyword or "").strip().lower()
+
+        def to_item(p):
+            return {"id": str(p.id), **(p.payload or {})}
+
+        # 无关键词:结构化过滤已足够,单页返回,行为等同 scroll
+        if not kw:
+            points, nxt = await self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=flt,
+                limit=limit,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            return (
+                [to_item(p) for p in points],
+                (str(nxt) if nxt is not None else None),
+                len(points),
+            )
+
+        # 有关键词:按页扫描 + 客户端子串过滤,按页边界续翻(无重无漏)
+        matches: List[dict] = []
+        scanned = 0
+        cur = offset
+        while True:
+            points, nxt = await self.client.scroll(
+                collection_name=self.collection,
+                scroll_filter=flt,
+                limit=chunk,
+                offset=cur,
+                with_payload=True,
+                with_vectors=False,
+            )
+            scanned += len(points)
+            for p in points:
+                pl = p.payload or {}
+                if kw in str(pl.get("text", "")).lower() or kw in str(
+                    pl.get("response", "")
+                ).lower():
+                    matches.append(to_item(p))
+            cur = str(nxt) if nxt is not None else None
+            if cur is None or len(matches) >= limit or scanned >= max_scan:
+                break
+        return matches, cur, scanned
 
     async def delete_point(self, point_id: str) -> None:
         await self.client.delete(

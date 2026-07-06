@@ -139,11 +139,28 @@ class RepeatPlugin(Star):
         if not group:
             return error_response("缺少 group 参数")
         mode = request.query.get("mode", "") or None
+        sender = request.query.get("sender", "") or None
+        keyword = request.query.get("keyword", "") or None
+        since = request.query.get("since", 0, type=int) or None
+        until = request.query.get("until", 0, type=int) or None
         limit = request.query.get("limit", 20, type=int)
         offset = request.query.get("offset", "") or None
-        points, nxt = await self.store.scroll(group, mode, limit, offset)
-        items = [{"id": str(p.id), **(p.payload or {})} for p in points]
-        return json_response({"status": "ok", "data": {"items": items, "next": nxt}})
+        items, nxt, scanned = await self.store.query_raw(
+            group,
+            mode=mode,
+            sender_id=sender,
+            keyword=keyword,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+        return json_response(
+            {
+                "status": "ok",
+                "data": {"items": items, "next": nxt, "scanned": scanned},
+            }
+        )
 
     async def web_search(self):
         if not await self._ensure_ready():

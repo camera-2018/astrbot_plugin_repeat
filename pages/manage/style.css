@@ -91,6 +91,9 @@ button.del { background: transparent; color: var(--danger); border: 1px solid va
 [data-theme="dark"] .tag.echo { background: #1c2740; color: #93b4ff; }
 [data-theme="dark"] .tag.cont { background: #3a2a1c; color: #f6b27a; }
 .score { color: var(--accent); font-weight: 600; }
+.time { color: var(--muted); font-size: 11px; }
+label.inline { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+label.inline input { width: auto; }
 .item .text { white-space: pre-wrap; word-break: break-word; }
 .item .resp { color: var(--muted); white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
 .item .actions { margin-top: 6px; display: flex; gap: 6px; }

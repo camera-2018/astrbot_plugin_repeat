@@ -17,17 +17,32 @@ function curGroup() {
 }
 
 // ---------- 渲染 ----------
+function fmtTime(ts) {
+  const n = Number(ts);
+  if (!n) return "";
+  try {
+    return new Date(n * 1000).toLocaleString();
+  } catch (_) {
+    return "";
+  }
+}
+
 function itemEl(it, { score } = {}) {
   const el = document.createElement("div");
   el.className = "item";
   const modeTag = `<span class="tag ${esc(it.mode)}">${it.mode === "cont" ? "顺延" : "附和"}</span>`;
   const scoreTag =
     typeof score === "number" ? `<span class="score">${score.toFixed(3)}</span>` : "";
+  const senderTag = it.sender_id
+    ? `<span class="tag">👤 ${esc(it.sender_id)}</span>`
+    : "";
+  const time = fmtTime(it.ts);
+  const timeTag = time ? `<span class="time">${esc(time)}</span>` : "";
   const resp = it.response
     ? `<div class="resp">↳ ${esc(it.response)}</div>`
     : "";
   el.innerHTML = `
-    <div class="meta">${modeTag}${scoreTag}<span class="id">${esc(it.id)}</span></div>
+    <div class="meta">${modeTag}${scoreTag}${senderTag}${timeTag}<span class="id">${esc(it.id)}</span></div>
     <div class="text">${esc(it.text)}</div>${resp}
     <div class="actions">
       <button class="mini ghost edit">编辑</button>
@@ -81,16 +96,26 @@ async function doSearch() {
   }
 }
 
+const toEpoch = (v) => {
+  if (!v) return 0;
+  const t = new Date(v).getTime();
+  return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
+};
+
 let listNext = null;
 async function loadList(reset = true) {
   const group = curGroup();
   if (!group) return flash("请先填群号", "err");
   if (reset) listNext = null;
-  flash("加载中…");
+  flash("查询中…");
   try {
     const params = {
       group,
       mode: $("listMode").value,
+      keyword: $("listKeyword").value.trim(),
+      sender: $("listSender").value.trim(),
+      since: toEpoch($("listSince").value),
+      until: toEpoch($("listUntil").value),
       limit: Number($("listLimit").value) || 20,
     };
     if (!reset && listNext) params.offset = listNext;
@@ -101,9 +126,13 @@ async function loadList(reset = true) {
     for (const it of data.items) box.appendChild(itemEl(it));
     listNext = data.next;
     $("listMore").disabled = !listNext;
-    flash(`已加载 ${data.items.length} 条${listNext ? "(还有更多)" : ""}`, "ok");
+    const scanned = typeof data.scanned === "number" ? `,已扫描 ${data.scanned}` : "";
+    flash(
+      `命中 ${data.items.length} 条${scanned}${listNext ? "(还有更多)" : ""}`,
+      "ok"
+    );
   } catch (e) {
-    flash("加载失败:" + e.message, "err");
+    flash("查询失败:" + e.message, "err");
   }
 }
 
