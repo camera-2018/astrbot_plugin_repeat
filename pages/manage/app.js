@@ -343,7 +343,7 @@ function EmptyState({ icon = Database, text }) {
   );
 }
 
-function MemoryItem({ item, onDelete, onEdit, showScore = false }) {
+function MemoryItem({ item, onDelete, onEdit, showScore = false, selected = false, onToggleSelect }) {
   const meta = [
     item.id ? `ID ${item.id}` : "",
     item.sender_id ? `来源 ${item.sender_id}` : "",
@@ -361,7 +361,17 @@ function MemoryItem({ item, onDelete, onEdit, showScore = false }) {
       { className: "flex items-start justify-between gap-3" },
       h(
         "div",
-        { className: "flex flex-wrap gap-2" },
+        { className: "flex flex-wrap items-center gap-2" },
+        onToggleSelect
+          ? h("input", {
+              type: "checkbox",
+              className: "h-4 w-4 rounded border-zinc-700 bg-transparent",
+              checked: selected,
+              onChange: () => onToggleSelect(item.id),
+              "aria-label": "选择此条",
+              "data-testid": "item-select",
+            })
+          : null,
         h(Badge, { tone: item.mode === "cont" ? "success" : "primary" }, modeName(item.mode)),
         showScore && typeof item.score === "number"
           ? h(Badge, { tone: "neutral" }, `相似度 ${item.score.toFixed(3)}`)
@@ -390,7 +400,16 @@ function MemoryItem({ item, onDelete, onEdit, showScore = false }) {
   );
 }
 
-function ResultList({ emptyIcon, emptyText, items, onDelete, onEdit, showScore = false }) {
+function ResultList({
+  emptyIcon,
+  emptyText,
+  items,
+  onDelete,
+  onEdit,
+  showScore = false,
+  selectedIds,
+  onToggleSelect,
+}) {
   if (!items.length) return h(EmptyState, { icon: emptyIcon, text: emptyText });
   return h(
     "div",
@@ -402,6 +421,8 @@ function ResultList({ emptyIcon, emptyText, items, onDelete, onEdit, showScore =
         onDelete,
         onEdit,
         showScore,
+        selected: !!(selectedIds && selectedIds.has(item.id)),
+        onToggleSelect,
       })
     )
   );
@@ -428,6 +449,7 @@ function App() {
   const [listSender, setListSender] = useState("");
   const [listSince, setListSince] = useState("");
   const [listUntil, setListUntil] = useState("");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   const [form, setForm] = useState({ id: "", mode: "echo", text: "", response: "" });
 
@@ -497,6 +519,7 @@ function App() {
     setSearchResults([]);
     setListItems([]);
     setListNext(null);
+    setSelectedIds(new Set());
   }, []);
 
   const loadList = useCallback(
@@ -522,6 +545,7 @@ function App() {
         const items = Array.isArray(data.items) ? data.items : [];
         setListItems((prev) => (reset ? items : [...prev, ...items]));
         setListNext(data.next || null);
+        if (reset) setSelectedIds(new Set());
         const scannedTxt =
           typeof data.scanned === "number" ? `, 已扫描 ${data.scanned}` : "";
         flash(
@@ -618,6 +642,12 @@ function App() {
         await bridge.apiPost("delete", { id });
         setSearchResults((prev) => prev.filter((item) => item.id !== id));
         setListItems((prev) => prev.filter((item) => item.id !== id));
+        setSelectedIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
         if (form.id === id) resetForm(form.mode);
         await loadStats();
         flash("已删除", "ok");
@@ -629,6 +659,42 @@ function App() {
     },
     [flash, form.id, form.mode, loadStats, resetForm]
   );
+
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size === listItems.length ? new Set() : new Set(listItems.map((item) => item.id))
+    );
+  }, [listItems]);
+
+  const batchDeleteSelected = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    if (!confirm(`确认删除选中的 ${ids.length} 条记忆? 此操作不可撤销。`)) return;
+    setBusy("batch-delete");
+    try {
+      const data = unwrap(await bridge.apiPost("delete", { ids })) || {};
+      const idSet = new Set(ids);
+      setListItems((prev) => prev.filter((item) => !idSet.has(item.id)));
+      setSearchResults((prev) => prev.filter((item) => !idSet.has(item.id)));
+      setSelectedIds(new Set());
+      if (idSet.has(form.id)) resetForm(form.mode);
+      await loadStats();
+      flash(`已删除 ${data.deleted ?? ids.length} 条`, "ok");
+    } catch (e) {
+      flash("批量删除失败: " + e.message, "err");
+    } finally {
+      setBusy("");
+    }
+  }, [selectedIds, form.id, form.mode, loadStats, resetForm, flash]);
 
   const clearGroup = useCallback(async () => {
     const currentGroup = group.trim();
@@ -835,13 +901,51 @@ function App() {
                     )
                   : null
               ),
-              h("div", { className: "justify-self-end text-xs text-zinc-500" }, `${listItems.length} 条${listNext ? "+" : ""}`),
+              h(
+                "div",
+                { className: "flex flex-wrap items-center justify-between gap-2" },
+                h(
+                  "label",
+                  { className: "flex items-center gap-2 text-xs text-zinc-500" },
+                  h("input", {
+                    type: "checkbox",
+                    className: "h-4 w-4 rounded border-zinc-700 bg-transparent",
+                    checked: listItems.length > 0 && selectedIds.size === listItems.length,
+                    disabled: !listItems.length,
+                    onChange: toggleSelectAll,
+                    "data-testid": "select-all",
+                  }),
+                  "全选"
+                ),
+                h(
+                  "div",
+                  { className: "flex items-center gap-3" },
+                  selectedIds.size > 0
+                    ? h(
+                        Button,
+                        {
+                          type: "button",
+                          variant: "destructive",
+                          size: "sm",
+                          busy: busy === "batch-delete",
+                          onClick: batchDeleteSelected,
+                          "data-testid": "batch-delete-button",
+                        },
+                        h(Trash2, { size: 14, "aria-hidden": true }),
+                        `批量删除 (${selectedIds.size})`
+                      )
+                    : null,
+                  h("span", { className: "text-xs text-zinc-500" }, `${listItems.length} 条${listNext ? "+" : ""}`)
+                )
+              ),
               h(ResultList, {
                 emptyIcon: Database,
                 emptyText: "暂无记忆",
                 items: listItems,
                 onDelete: deletePoint,
                 onEdit: editItem,
+                selectedIds,
+                onToggleSelect: toggleSelect,
               })
             )
       ),

@@ -10,6 +10,7 @@
 import asyncio
 import json
 import random
+import re
 import time
 from typing import Dict, Optional, Set
 
@@ -19,6 +20,15 @@ from astrbot.api.star import Context, Star, register
 
 from .embedding import build_embedder
 from .qdrant_store import MODE_CONT, MODE_ECHO, QdrantStore
+
+# 部分平台/适配器会把 At 目标解析失败退化成 "@昵称(QQ号)" 字面文本混进 message_str,
+# 这里只在能拿到组件链时优先用 Plain 段重建正文;拿不到时回退。
+try:
+    import astrbot.api.message_components as Comp
+
+    _COMP_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    _COMP_AVAILABLE = False
 
 PLUGIN_NAME = "astrbot_plugin_repeat"
 INIT_RETRY_SECONDS = 60
@@ -217,15 +227,21 @@ class RepeatPlugin(Star):
         if not await self._ensure_ready():
             return error_response("插件未就绪")
         body = await request.json(default={})
+        ids = body.get("ids")
         pid = body.get("id")
         group = str(body.get("group", "")).strip()
+        if isinstance(ids, list) and ids:
+            n = await self.store.delete_points([str(i) for i in ids])
+            return json_response({"status": "ok", "data": {"deleted": n}})
         if pid:
             await self.store.delete_point(pid)
             return json_response({"status": "ok", "data": {"deleted": str(pid)}})
         if group and body.get("clear"):
             await self.store.clear_group(group)
             return json_response({"status": "ok", "data": {"cleared_group": group}})
-        return error_response("需要 id(删除单点)或 group + clear=true(清空整群)")
+        return error_response(
+            "需要 ids(批量删除)、id(删除单点)或 group + clear=true(清空整群)"
+        )
 
     # ---------- 生命周期 ----------
 
@@ -279,11 +295,29 @@ class RepeatPlugin(Star):
 
     # ---------- 工具 ----------
 
+    # 只匹配"名字后紧跟半角/全角括号 + 5 位以上纯数字 + 对应括号"的形状——
+    # 这是 At 目标解析失败退化成 "@昵称(QQ号)" 文本的特征签名。
+    # 不要用宽泛的 @\S+:中文 @ 后常无空格,会把"@张三今晚吃啥"这类正常内容一起删掉。
+    _AT_ARTIFACT_RE = re.compile(r"@\S+?[(（]\d{5,}[)）]")
+
     @staticmethod
-    def _clean_text(raw: str) -> str:
-        # event.message_str 已是纯文本(At 等组件不在其中),只需规整空白。
-        # 不要用 @\S+ 这种正则:中文 @ 后常无空格,会把正文一起删掉。
-        return (raw or "").strip()
+    def _plain_text_from_event(event: AstrMessageEvent) -> str:
+        """优先从消息组件链只取 Plain 文本段,天然丢弃 At/Reply 等非文本组件。"""
+        if _COMP_AVAILABLE:
+            msg_obj = getattr(event, "message_obj", None)
+            chain = getattr(msg_obj, "message", None) if msg_obj else None
+            if chain:
+                joined = "".join(
+                    getattr(c, "text", "") for c in chain if isinstance(c, Comp.Plain)
+                ).strip()
+                if joined:
+                    return joined
+        return event.message_str or ""
+
+    @classmethod
+    def _clean_text(cls, raw: str) -> str:
+        text = cls._AT_ARTIFACT_RE.sub("", raw or "")
+        return re.sub(r"\s+", " ", text).strip()
 
     def _maybe_continuation(self, text: str) -> bool:
         """便宜的前置闸:决定是否值得为这条消息调用 LLM 做顺延抽取。"""
@@ -366,7 +400,7 @@ class RepeatPlugin(Star):
         if self.active_groups and group_id not in self.active_groups:
             return
 
-        text = self._clean_text(event.message_str)
+        text = self._clean_text(self._plain_text_from_event(event))
         if not text or text.startswith("/") or len(text) < self.min_length:
             return
 

@@ -159,8 +159,14 @@ class QdrantStore:
     ) -> Tuple[List[dict], Optional[str], int]:
         """按原始存储字段(不走向量)查询记忆点。
 
-        结构化条件(group/mode/sender/时间范围)走 Qdrant filter;
-        keyword 做大小写无关子串包含,匹配 text 或 response(客户端过滤)。
+        结构化条件(group/mode/sender/时间范围)走 Qdrant filter;keyword 做大小写无关
+        子串包含,客户端过滤(匹配 text 或 response)。
+
+        为什么不用 Qdrant 的 TEXT 索引 + MatchText:实测 multilingual/word/whitespace
+        三种分词器,查询关键词"火锅"都搜不到明明包含"我爱吃火锅"的文档——中文场景下
+        MatchText 基于分词 token 做匹配,不是任意位置的字符子串匹配,大多数子串查询会
+        直接落空,而不是"偶尔漏"。客户端子串扫描虽然量大时慢,但结果精确,更符合
+        "查 embedding 前原文" 这个用途的预期。
         返回 (items, next_offset, scanned)。
         """
         must = [
@@ -190,7 +196,7 @@ class QdrantStore:
         def to_item(p):
             return {"id": str(p.id), **(p.payload or {})}
 
-        # 无关键词:结构化过滤已足够,单页返回,行为等同 scroll
+        # 无关键词:结构化过滤已足够,单页返回
         if not kw:
             points, nxt = await self.client.scroll(
                 collection_name=self.collection,
@@ -232,10 +238,16 @@ class QdrantStore:
         return matches, cur, scanned
 
     async def delete_point(self, point_id: str) -> None:
+        await self.delete_points([point_id])
+
+    async def delete_points(self, point_ids: List[str]) -> int:
+        if not point_ids:
+            return 0
         await self.client.delete(
             collection_name=self.collection,
-            points_selector=models.PointIdsList(points=[point_id]),
+            points_selector=models.PointIdsList(points=list(point_ids)),
         )
+        return len(point_ids)
 
     async def facet(self, key: str, group_id: Optional[str] = None, limit: int = 200):
         flt = None
