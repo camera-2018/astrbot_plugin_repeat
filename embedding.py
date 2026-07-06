@@ -66,7 +66,16 @@ class AstrBotEmbedder(BaseEmbedder):
 
     async def embed(self, text: str) -> List[float]:
         provider = self._resolve_provider()
-        vec = await _maybe_await(provider.get_embedding(text))
+        try:
+            vec = await _maybe_await(provider.get_embedding(text))
+        except Exception as e:  # noqa: BLE001
+            pid = (
+                getattr(provider, "id", None)
+                or getattr(provider, "provider_id", None)
+                or getattr(provider, "name", None)
+                or provider.__class__.__name__
+            )
+            raise RuntimeError(f"embedding provider {pid} 调用失败: {e}") from e
         return list(vec)
 
     async def dim(self) -> int:
