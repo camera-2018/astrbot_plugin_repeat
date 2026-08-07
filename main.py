@@ -15,7 +15,7 @@ import time
 from typing import Dict, Optional, Set
 
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.star import Context, Star, register
 
 from .embedding import build_embedder
@@ -61,7 +61,7 @@ _CONT_EXTRACT_PROMPT = """你在帮一个群聊机器人建立"接话"记忆库�
     "astrbot_plugin_repeat",
     "camera-2018",
     "按群组+白名单隔离收集发言存入 Qdrant,语义附和或顺延接话",
-    "0.1.0",
+    "0.1.1",
 )
 class RepeatPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -331,6 +331,21 @@ class RepeatPlugin(Star):
         last = self._last_reply.get(group_id, 0)
         return (time.time() - last) >= self.cooldown_seconds
 
+    async def _send_repeat_reply(self, event: AstrMessageEvent, reply: str) -> bool:
+        """主动发送复读消息，不占用原事件结果或阻止默认 Agent。"""
+        try:
+            sent = await self.context.send_message(
+                event.unified_msg_origin,
+                MessageChain().message(reply),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[repeat] 主动发送复读消息失败: {self._format_exception(e)}")
+            return False
+        if not sent:
+            logger.warning("[repeat] 主动发送复读消息失败:未找到匹配的平台")
+            return False
+        return True
+
     @staticmethod
     def _format_exception(exc: Exception) -> str:
         detail = str(exc).strip()
@@ -440,13 +455,15 @@ class RepeatPlugin(Star):
             if reply and reply != text:
                 candidates.append((cont_match[0], reply))
 
-        # 2) 命中则过 冷却+概率 门后发话
+        # 2) 命中则过 冷却+概率 门后主动发话。
+        # 不要 yield/event.send:二者都会让 AstrBot 认为原事件已被插件处理，
+        # 从而跳过默认 Agent。context.send_message 不修改原事件状态。
         if candidates:
             candidates.sort(key=lambda x: x[0], reverse=True)
             _, reply = candidates[0]
             if self._can_reply(group_id) and random.random() < self.reply_probability:
-                self._last_reply[group_id] = time.time()
-                yield event.plain_result(reply)
+                if await self._send_repeat_reply(event, reply):
+                    self._last_reply[group_id] = time.time()
 
         # 3) 收集写入(发送者在收集白名单内才写;与是否回复无关)
         if self.collect_users and sender_id not in self.collect_users:
