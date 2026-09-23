@@ -20,6 +20,7 @@ from astrbot.api.star import Context, Star, register
 
 from .embedding import build_embedder
 from .qdrant_store import MODE_CONT, MODE_ECHO, QdrantStore
+from .reply_cooldown import ReplyCooldown, best_available
 
 # 部分平台/适配器会把 At 目标解析失败退化成 "@昵称(QQ号)" 字面文本混进 message_str,
 # 这里只在能拿到组件链时优先用 Plain 段重建正文;拿不到时回退。
@@ -61,7 +62,7 @@ _CONT_EXTRACT_PROMPT = """你在帮一个群聊机器人建立"接话"记忆库�
     "astrbot_plugin_repeat",
     "camera-2018",
     "按群组+白名单隔离收集发言存入 Qdrant,语义附和或顺延接话",
-    "0.1.1",
+    "0.1.2",
 )
 class RepeatPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -95,6 +96,7 @@ class RepeatPlugin(Star):
         self.cont_threshold = float(config.get("cont_threshold", 0.80))
         self.reply_probability = float(config.get("reply_probability", 0.6))
         self.cooldown_seconds = int(config.get("cooldown_seconds", 30))
+        self.recall_cooldown_seconds = int(config.get("recall_cooldown_seconds", 600))
         self.min_length = int(config.get("min_length", 4))
         self.dedup_threshold = float(config.get("dedup_threshold", 0.97))
 
@@ -103,6 +105,8 @@ class RepeatPlugin(Star):
         self._ready = False
         self._init_lock = asyncio.Lock()
         self._last_reply: Dict[str, float] = {}
+        self._reply_cooldown = ReplyCooldown(self.recall_cooldown_seconds)
+        self._send_lock = asyncio.Lock()
         self._next_init_retry = 0.0
         self._next_init_error_log = 0.0
         self._last_init_error = ""
@@ -438,32 +442,42 @@ class RepeatPlugin(Star):
             return
 
         # 1) 先检索(写入前,避免命中刚插入的自己)
+        echo_hits = []
         echo_match = None
         if self.enable_echo:
-            echo_match = await self.store.best_match(MODE_ECHO, group_id, vec)
-        cont_match = None
+            echo_hits = await self.store.search(MODE_ECHO, group_id, vec, limit=5)
+            if echo_hits:
+                echo_match = echo_hits[0].score, (echo_hits[0].payload or {})
+        cont_hits = []
         if self.enable_continuation:
-            cont_match = await self.store.best_match(MODE_CONT, group_id, vec)
+            cont_hits = await self.store.search(MODE_CONT, group_id, vec, limit=5)
 
         candidates = []
-        if echo_match and echo_match[0] >= self.echo_threshold:
-            reply = (echo_match[1].get("text") or "").strip()
+        for hit in echo_hits:
+            if hit.score < self.echo_threshold:
+                continue
+            reply = ((hit.payload or {}).get("text") or "").strip()
             if reply and reply != text:
-                candidates.append((echo_match[0], reply))
-        if cont_match and cont_match[0] >= self.cont_threshold:
-            reply = (cont_match[1].get("response") or "").strip()
+                candidates.append((hit.score, reply))
+        for hit in cont_hits:
+            if hit.score < self.cont_threshold:
+                continue
+            reply = ((hit.payload or {}).get("response") or "").strip()
             if reply and reply != text:
-                candidates.append((cont_match[0], reply))
+                candidates.append((hit.score, reply))
 
-        # 2) 命中则过 冷却+概率 门后主动发话。
+        # 2) 命中则过 群冷却+内容冷却+概率 门后主动发话。
         # 不要 yield/event.send:二者都会让 AstrBot 认为原事件已被插件处理，
         # 从而跳过默认 Agent。context.send_message 不修改原事件状态。
         if candidates:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            _, reply = candidates[0]
-            if self._can_reply(group_id) and random.random() < self.reply_probability:
-                if await self._send_repeat_reply(event, reply):
-                    self._last_reply[group_id] = time.time()
+            # 并发的同群消息必须在选候选和发送之间串行，避免同时发送同一句。
+            async with self._send_lock:
+                now = time.monotonic()
+                reply = best_available(candidates, group_id, self._reply_cooldown, now)
+                if reply and self._can_reply(group_id) and random.random() < self.reply_probability:
+                    if await self._send_repeat_reply(event, reply):
+                        self._last_reply[group_id] = time.time()
+                        self._reply_cooldown.mark_sent(group_id, reply, time.monotonic())
 
         # 3) 收集写入(发送者在收集白名单内才写;与是否回复无关)
         if self.collect_users and sender_id not in self.collect_users:
@@ -541,7 +555,8 @@ class RepeatPlugin(Star):
             f"本群记忆条数: {cnt}",
             f"附和模式: {'开' if self.enable_echo else '关'} (阈值 {self.echo_threshold})",
             f"顺延模式: {'开' if self.enable_continuation else '关'} (阈值 {self.cont_threshold}, LLM拆句 {'开' if self.continuation_use_llm else '关'})",
-            f"发话概率: {self.reply_probability} / 冷却 {self.cooldown_seconds}s",
+            f"发话概率: {self.reply_probability} / 群冷却 {self.cooldown_seconds}s"
+            f" / 单句冷却 {self.recall_cooldown_seconds}s",
             f"Embedding 来源: {self.config.get('embedding_source')}",
         ]
         yield event.plain_result("\n".join(lines))

@@ -120,6 +120,12 @@
     "default": 30,
     "hint": "同一个群两次主动发话的最小间隔"
   },
+  "recall_cooldown_seconds": {
+    "description": "同一句复读内容的冷却秒数",
+    "type": "int",
+    "default": 600,
+    "hint": "同一群内成功发送后，10 分钟内不再发送相同内容；命中时会尝试其他合格候选。设 0 可关闭"
+  },
   "min_length": {
     "description": "收集/匹配的最小文本长度",
     "type": "int",
